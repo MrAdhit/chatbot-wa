@@ -1,0 +1,23 @@
+{
+    "name": "chatbot-wa",
+    "version": "1.0.0",
+    "description": "",
+    "type": "module",
+    "main": "main.js",
+    "scripts": {
+        "start": "tsc && node -r dotenv/config ./dist/main",
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [],
+    "author": "MrAdhit <adhityarimba97@gmail.com>",
+    "license": "BSD-3-Clause",
+    "dependencies": {
+        "dotenv": "^16.3.1",
+        "express": "^4.18.2",
+        "langchain": "0.0.105"
+    },
+    "devDependencies": {
+        "@types/express": "^4.17.17",
+        "@types/node": "^20.4.1"
+    }
+}
