@@ -51,7 +51,7 @@ async function POST(req: Request, res: Response) {
                 let answers: string[] = [];
 
                 let tools = [
-                    new SerpAPI("13c303117b20e8f1395f18fc349b7f62e7f7a5a8732e1b2d4856d2414ef7b98f"),
+                    new SerpAPI(),
                     new DynamicTool({
                         name: "tokopedia-query",
                         description: "a Tokopedia search engine. useful for searching any products from tokopedia. input should be a search query in bahasa indonesia",
