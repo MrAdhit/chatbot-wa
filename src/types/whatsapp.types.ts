@@ -2,14 +2,29 @@ export interface WebhookText {
     body: string;
 }
 
-export interface WebhookInteractive {
-    type: string;
-    button_reply: WebhookButtonReply;
-}
+export type WebhookInteractiveTypes = "button_reply" | "list_reply";
+
+export type WebhookInteractive<T extends WebhookInteractiveTypes> = T extends "button_reply"
+    ? {
+          type: "button_reply";
+          button_reply: WebhookButtonReply;
+      }
+    : T extends "list_reply"
+    ? {
+          type: "list_reply";
+          list_reply: WebhookListReply;
+      }
+    : never;
 
 export interface WebhookButtonReply {
     id: string;
     title: string;
+}
+
+export interface WebhookListReply {
+    id: string;
+    title: string;
+    description: string;
 }
 
 export interface WebhookContactProfile {
@@ -69,7 +84,7 @@ export interface MessageSection {
 export interface MessageSectionRows {
     id: string;
     title: string;
-    description: string;
+    description?: string;
 }
 
 export interface MessageButton {

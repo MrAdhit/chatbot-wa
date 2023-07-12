@@ -20,6 +20,10 @@ app.get("/", (req, res) => {
     return res.sendStatus(200);
 });
 
+app.get("/nodejs/token", (req, res) => {
+    return res.send("bro stfu");
+});
+
 app.all("/webhook", webhook);
 
 let listener = app.listen(process.env["LISTEN_PORT"], () => {
