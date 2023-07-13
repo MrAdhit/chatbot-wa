@@ -25,9 +25,9 @@ function GET(req: Request, res: Response) {
 
 let messageHistory: Map<string, string[]> = new Map();
 
-async function shortenRepeat(input: string, length: number, point: number = 5) {
+async function shortenRepeat(input: string, length: number, point: number = 3) {
     if (input.length <= length) return input;
-    if (point < 0) return input.slice(0, length);
+    if (point <= 0) return input.slice(0, length);
     let result = (
         await LLM_MODEL.call(`"${input}"\n
 ${point < 10 ? "That text is still bigger than the desired character length, try some other combination to make it shorter\nYou could make it to one word if it's not possible to shorten it anymore" : ""}
