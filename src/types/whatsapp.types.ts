@@ -77,7 +77,7 @@ export type MessageAction<T extends MessageInteractiveTypes> = T extends "button
     : never;
 
 export interface MessageSection {
-    title: string;
+    title?: string;
     rows: MessageSectionRows[];
 }
 

@@ -1,4 +1,4 @@
-import { MessageInteractive } from "../types/whatsapp.types.js";
+import { MessageButton, MessageInteractive } from "../types/whatsapp.types.js";
 
 class WhatsappMessage {
     private to: string;
@@ -30,6 +30,56 @@ class WhatsappMessage {
             text: {
                 preview_url: false,
                 body: message,
+            },
+        });
+    }
+}
+
+class WhatsappUser {
+    private to: string;
+    private api: WhatsappAPI;
+
+    constructor(to: string, api: WhatsappAPI) {
+        this.to = to;
+        this.api = api;
+    }
+
+    sendMessage(message: string) {
+        return this.api.sendTextMessage(this.to, message);
+    }
+
+    get interactive() {
+        return new WhatsappInteractiveMessage(this.to, this.api);
+    }
+}
+
+class WhatsappInteractiveMessage {
+    private to: string;
+    private api: WhatsappAPI;
+
+    constructor(to: string, api: WhatsappAPI) {
+        this.to = to;
+        this.api = api;
+    }
+
+    sendButtons(message: string, buttons: string[]) {
+        let btns: MessageButton[] = buttons.map((v) => {
+            return {
+                type: "reply",
+                reply: {
+                    id: v,
+                    title: v.slice(0, 20),
+                },
+            };
+        });
+
+        return this.api.sendInteractiveMessage(this.to, {
+            type: "button",
+            body: {
+                text: message,
+            },
+            action: {
+                buttons: btns,
             },
         });
     }
@@ -67,8 +117,12 @@ export default class WhatsappAPI {
         });
     }
 
-    getMessage(to: string, messageId: string) {
-        return new WhatsappMessage(to, messageId, this);
+    getUser(number: string) {
+        return new WhatsappUser(number, this);
+    }
+
+    getMessage(number: string, messageId: string) {
+        return new WhatsappMessage(number, messageId, this);
     }
 
     request(data: object) {

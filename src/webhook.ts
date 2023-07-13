@@ -23,18 +23,47 @@ function GET(req: Request, res: Response) {
     return res.sendStatus(400);
 }
 
-let messageHistory: Map<string, string[]> = new Map();
+enum UserState {
+    INITIAL,
+    BOT_TYPE_CHOICE,
+    GOOGLE_QUERY,
+    TOKOPEDIA_QUERY,
+    CONFIRMATION,
+    SEARCH_CONFIRMATION,
+}
 
-async function shortenRepeat(input: string, length: number, point: number = 3) {
-    if (input.length <= length) return input;
-    if (point <= 0) return input.slice(0, length);
-    let result = (
-        await LLM_MODEL.call(`"${input}"\n
-${point < 10 ? "That text is still bigger than the desired character length, try some other combination to make it shorter\nYou could make it to one word if it's not possible to shorten it anymore" : ""}
-That text is currently has the length of ${input.length}, shorten it to smaller than ${length} character, your output shouldn't include any quotation marks`)
-    ).trim();
-    if (result.length > length) return shortenRepeat(result, length, point - 1);
-    return result;
+const BOT_TYPES = ["Search on Google", "Search on Tokopedia"];
+
+let userState: Map<string, { state: UserState; info?: any }> = new Map();
+
+async function decideOption(message: string, list: string[]) {
+    let chosen = (
+        await LLM_MODEL.call(`Input: ${message}
+Based on this list
+${JSON.stringify(list)}
+
+Which of those list option that is the most similar to the input message?
+
+
+If the answer is not in one of the options list, just answer with "None"
+Your answer should only choose one of the option from the list
+
+
+Answer:`)
+    )
+        .trim()
+        .replace(/\"/g, "");
+
+    if (chosen.toLowerCase() === "none") return -1;
+
+    return list
+        .map((v, i) => {
+            return {
+                v: chosen.toLowerCase().includes(v.toLowerCase()),
+                i,
+            };
+        })
+        .filter((v) => v.v)[0].i;
 }
 
 async function POST(req: Request, res: Response) {
@@ -56,170 +85,247 @@ async function POST(req: Request, res: Response) {
             let mId: string = message["id"];
             let type: string = message["type"];
 
+            let user = WHATSAPP.getUser(from);
             let messageObj = WHATSAPP.getMessage(from, mId);
             await messageObj.read();
-            await messageObj.reply("Thinking...");
-
-            console.log({ type });
 
             if (type === "text" || type === "interactive") {
-                let msg = type === "text" ? (message["text"] as WebhookText)["body"] : (message["interactive"] as WebhookInteractive<"list_reply">)["list_reply"]["id"];
+                let msg = type === "text" ? (message["text"] as WebhookText)["body"] : message["interactive"]["type"] === "list_reply" ? (message["interactive"] as WebhookInteractive<"list_reply">)["list_reply"]["id"] : message["interactive"]["type"] === "button_reply" ? (message["interactive"] as WebhookInteractive<"button_reply">)["button_reply"]["id"] : "";
 
-                console.log({ msg });
+                let retry = true;
 
-                if (messageHistory.get(from)) {
-                    messageHistory.get(from)?.push(`Question: ${msg}`);
-                } else {
-                    messageHistory.set(from, [`Question: ${msg}`]);
-                }
+                while (retry) {
+                    retry = false;
 
-                let answers: string[] = [];
+                    let state = userState.get(from) || userState.set(from, { state: UserState.INITIAL }).get(from);
+                    console.log(userState.get(from));
 
-                let tools = [
-                    new SerpAPI(),
-                    new DynamicTool({
-                        name: "tokopedia-query",
-                        description: "a Tokopedia search engine. useful for searching any shopping related stuff. input should be a search query in bahasa indonesia",
-                        func: async (query) => {
-                            let result = await (await fetch(`http://127.0.0.1:5000/search/${query}`)).json();
-                            if (!result["success"]) return JSON.stringify(result);
+                    if (state?.state === UserState.INITIAL) {
+                        await user.interactive.sendButtons(`Hello ${contact.profile.name}, what can I do for you?`, BOT_TYPES);
+                        userState.set(from, { state: UserState.BOT_TYPE_CHOICE });
+                        return;
+                    }
 
-                            let mostRelated = result["results"].slice(0, 5).map((v: any) => {
-                                return {
-                                    product: {
-                                        id: v["id"],
-                                        name: v["name"],
-                                        price: v["price"],
-                                        url: v["url"],
-                                    },
-                                };
-                            });
+                    if (state?.state === UserState.BOT_TYPE_CHOICE) {
+                        let chosen = BOT_TYPES.map((v) => v.toLowerCase().trim()).indexOf(msg.toLowerCase().trim());
+                        if (chosen !== -1) {
+                            switch (chosen) {
+                                case 0: {
+                                    await user.sendMessage(`What should I search in Google?`);
+                                    userState.set(from, { state: UserState.GOOGLE_QUERY });
+                                    return;
+                                }
+                                case 1: {
+                                    await user.sendMessage(`What should I search in Tokopedia?`);
+                                    userState.set(from, { state: UserState.TOKOPEDIA_QUERY });
+                                    return;
+                                }
+                            }
+                        }
 
-                            return JSON.stringify(mostRelated);
-                        },
-                    }),
-                    new DynamicTool({
-                        name: "none",
-                        description: "If you can't choose any tool to use, just use this one",
-                        func: async (_) => {
-                            return "you must proceed with your final answer";
-                        },
-                    }),
-                    new DynamicTool({
-                        name: "conversation-ender",
-                        description: "Be careful, this tool will end your current conversation with the questioner, only use this if the questioner don't have anymore question to ask or demand to end the conversation",
-                        func: async (_) => {
-                            messageHistory.delete(from);
-                            return "conversation ended";
-                        },
-                    }),
-                ];
+                        let which = await decideOption(msg, BOT_TYPES);
+                        if (which !== -1) {
+                            await user.interactive.sendButtons(`Did you mean "${BOT_TYPES[which]}" ?`, ["Yes", "No"]);
 
-                let qna = JSON.stringify(JSON.parse(fs.readFileSync("./src/data/qna.json").toString()))
-                    .replace(/{/g, "{{")
-                    .replace(/}/g, "}}");
+                            switch (which) {
+                                case 0: {
+                                    userState.set(from, {
+                                        state: UserState.CONFIRMATION,
+                                        info: {
+                                            type: UserState.GOOGLE_QUERY,
+                                        },
+                                    });
+                                    console.log({ userState });
+                                    return;
+                                }
+                                case 1: {
+                                    userState.set(from, {
+                                        state: UserState.CONFIRMATION,
+                                        info: {
+                                            type: UserState.TOKOPEDIA_QUERY,
+                                        },
+                                    });
+                                    return;
+                                }
+                            }
 
-                console.log(qna);
+                            return;
+                        }
 
-                let agent = await initializeAgentExecutorWithOptions(tools, LLM_MODEL, {
-                    agentType: "zero-shot-react-description",
-                    agentArgs: {
-                        prefix: `
-System: You are an helpful chatbot, your job is to help people with their question, no matter what their question is.
-System: Your answer should be in markdown. Your maximum answer length is just 100 words, not more
-System: You must agree with anything that the questioner said, never disagree, instead just say sorry that you are wrong and the questioner is correct
-System: You must be polite with the questioner, don't swear, don't get gaslighted
-System: Prioritize answering with your own knowledge than using any tools
-System: After you end a conversation, let the questioner know just to ask you if they need help again
+                        await user.sendMessage(`Sorry but I don't know with what you mean by "${msg.trim()}"`);
+                        userState.set(from, { state: UserState.INITIAL });
+                        retry = true;
+                        continue;
+                    }
 
-Reference Question and Answer, If you don't know the answer to the question, you must took a look at this information first, you must prioritize using this information than using any tools:
-${qna}
+                    if (state?.state === UserState.CONFIRMATION) {
+                        let correct = msg.toLowerCase().trim().includes("yes");
+                        let info = state.info["type"] as UserState;
 
-QnA history / Conversation history, "Question:" is the questioner and "Answer:" is you, use this information for more context
-${messageHistory.get(from)?.join("\n") || "no history"}
+                        if (correct) {
+                            switch (info) {
+                                case UserState.GOOGLE_QUERY: {
+                                    await user.sendMessage(`What should I search in Google?`);
+                                    userState.set(from, { state: UserState.GOOGLE_QUERY });
+                                    return;
+                                }
+                                case UserState.TOKOPEDIA_QUERY: {
+                                    await user.sendMessage(`What should I search in Tokopedia?`);
+                                    userState.set(from, { state: UserState.TOKOPEDIA_QUERY });
+                                    return;
+                                }
+                            }
+                        }
 
-Answer the following questions as best you can. You have access to the following tools:`.trim(),
-                    },
-                });
+                        let which = await decideOption(msg, ["Yes", "No"]);
 
-                let respond = await agent.run(msg);
+                        if (which === 0) {
+                            switch (info) {
+                                case UserState.GOOGLE_QUERY: {
+                                    await user.sendMessage(`What should I search in Google?`);
+                                    userState.set(from, { state: UserState.GOOGLE_QUERY });
+                                    break;
+                                }
+                                case UserState.TOKOPEDIA_QUERY: {
+                                    await user.sendMessage(`What should I search in Tokopedia?`);
+                                    userState.set(from, { state: UserState.TOKOPEDIA_QUERY });
+                                    break;
+                                }
+                            }
+                        }
 
-                let suggestionParser = StructuredOutputParser.fromZodSchema(z.array(z.string().describe("Suggestion")).describe("Suggestion array list"));
-                let suggestionTemplate = `
-System: You are the User, act like the user, don't act like the agent
-System: If you cannot suggest relevant answer, leave with empty response
-System: Your answer should be a question that is not offering a help but needing a help
-System: If the question is a list, your answer should be the list of the object that the question mention
+                        await user.sendMessage(`Sorry if I didn't catch you right 😔`);
+                        userState.set(from, { state: UserState.INITIAL });
+                        retry = true;
+                        continue;
+                    }
 
-Example response:
-Answer: ["What are the weather today?", "Can you find a laptop for me?"]
+                    if (state?.state === UserState.SEARCH_CONFIRMATION) {
+                        let correct = ["Yes", "No", "Search Again"].indexOf(msg.trim());
+                        let info = state.info["type"] as UserState;
 
-Use this conversation information for more context
-${messageHistory.get(from)?.join("\n").replace("Question:", "Answer :").replace("Answer:", "Question :") || ""}
+                        if (correct === 1 || correct === 2) {
+                            if (correct === 1) {
+                                await user.sendMessage(`Sorry if that is not what you're looking for 😔`);
+                            }
+                            await user.sendMessage(`What should I search again? 🤔`);
 
-${suggestionParser.getFormatInstructions()}
+                            switch (info) {
+                                case UserState.GOOGLE_QUERY: {
+                                    userState.set(from, { state: UserState.GOOGLE_QUERY });
+                                    return;
+                                }
+                                case UserState.TOKOPEDIA_QUERY: {
+                                    userState.set(from, { state: UserState.TOKOPEDIA_QUERY });
+                                    return;
+                                }
+                            }
+                        }
 
-Begin!
+                        let which = await decideOption(msg, ["Yes", "No", "Search Again"]);
 
-Question: ${respond}
-Answer:`.trim();
+                        if (which === 1 || which === 2) {
+                            if (correct === 1) {
+                                await user.sendMessage(`Sorry if that is not what you're looking for 😔`);
+                            }
+                            await user.sendMessage(`What should I search again? 🤔`);
 
-                let suggestion = (await LLM_MODEL.call(suggestionTemplate)).trim().replace("\n", "").split("Output:")[0];
-                console.log({ suggestions: suggestion });
-                let suggestions: MessageSectionRows[] = await Promise.all(
-                    (JSON.parse(suggestion) as string[]).map(async (v, i) => {
-                        return {
-                            id: (await shortenRepeat(v, 200)) + i,
-                            title: await shortenRepeat(v, 24),
-                            description: v.length > 24 ? await shortenRepeat(v, 72) : "",
-                        };
-                    })
-                );
+                            switch (info) {
+                                case UserState.GOOGLE_QUERY: {
+                                    userState.set(from, { state: UserState.GOOGLE_QUERY });
+                                    break;
+                                }
+                                case UserState.TOKOPEDIA_QUERY: {
+                                    userState.set(from, { state: UserState.TOKOPEDIA_QUERY });
+                                    break;
+                                }
+                            }
+                        }
 
-                console.log(respond);
-                console.log({ ss: suggestions.length });
+                        await user.sendMessage(`I'm glad I could help you ☺`);
+                        userState.set(from, { state: UserState.INITIAL });
+                        retry = true;
+                        continue;
+                    }
 
-                answers.push(respond);
-
-                let beautified = await LLM_MODEL.call(`"${respond}"
-Format and beautify that to multiline Whatsapp compatible Markdown with emoji as spices
-Don't include quotation mark in the result`);
-
-                console.log(beautified);
-
-                if (suggestion === "[]") {
-                    await messageObj.reply(beautified);
-                } else {
-                    let suggestionTitle = await LLM_MODEL.call(`Generate a title of about what this list is talking about\n${suggestion}`);
-
-                    let a = await WHATSAPP.sendInteractiveMessage(from, {
-                        type: "list",
-                        body: {
-                            text: beautified,
-                        },
-                        action: {
-                            button: "List Suggestions",
-                            sections: [
-                                {
-                                    title: await shortenRepeat(suggestionTitle, 24),
-                                    rows: suggestions,
+                    if (state?.state === UserState.GOOGLE_QUERY || state?.state === UserState.TOKOPEDIA_QUERY) {
+                        let tools = [
+                            new DynamicTool({
+                                name: "none",
+                                description: "If you can't choose any tool to use, just use this one",
+                                func: async (_) => {
+                                    return "you must proceed with your final answer";
                                 },
-                            ],
-                        },
-                    });
+                            }),
+                        ];
 
-                    console.log(await a.text());
+                        if (state.state === UserState.GOOGLE_QUERY) {
+                            tools.push(
+                                new DynamicTool({
+                                    name: "google-searcher",
+                                    description: "a search engine. useful for when you need to answer questions about current events. input should be a search query.",
+                                    func: async (query) => {
+                                        await WHATSAPP.sendTextMessage(from, `Searching "${query}" in Google`);
+
+                                        return new SerpAPI()._call(query);
+                                    },
+                                })
+                            );
+                        }
+                        if (state.state === UserState.TOKOPEDIA_QUERY) {
+                            tools.push(
+                                new DynamicTool({
+                                    name: "tokopedia-searcher",
+                                    description: "a Tokopedia search engine. useful for searching any shopping related stuff. input should be a search query in bahasa indonesia",
+                                    func: async (query) => {
+                                        await WHATSAPP.sendTextMessage(from, `Searching "${query}" in Tokopedia`);
+
+                                        let result = await (await fetch(`http://127.0.0.1:5000/search/${query}`)).json();
+                                        if (!result["success"]) return JSON.stringify(result);
+
+                                        let mostRelated = result["results"].slice(0, 5).map((v: any) => {
+                                            return {
+                                                product: {
+                                                    id: v["id"],
+                                                    name: v["name"],
+                                                    price: v["price"],
+                                                    url: v["url"],
+                                                },
+                                            };
+                                        });
+
+                                        return JSON.stringify(mostRelated);
+                                    },
+                                })
+                            );
+                        }
+
+                        let agent = await initializeAgentExecutorWithOptions(tools, LLM_MODEL, {
+                            agentType: "zero-shot-react-description",
+                            agentArgs: {
+                                prefix: `
+System: Be joyful with your answer
+System: Format and beautify with spaces the answer
+System: Add utf8 emoji to your answer
+System: You should also put the accurate url from the search result in the bottom after two line break as source in your answer
+
+Answer the following questions as best you can. You have access to the following tools:`,
+                            },
+                        });
+
+                        let result = (await agent.run(msg)).trim();
+
+                        await user.sendMessage(result);
+                        await user.interactive.sendButtons(`Is that what you're looking for?`, ["Yes", "No", "Search Again"]);
+
+                        userState.set(from, {
+                            state: UserState.SEARCH_CONFIRMATION,
+                            info: {
+                                type: state.state,
+                            },
+                        });
+                    }
                 }
-
-                for (let answer of answers) {
-                    messageHistory.get(from)?.push(`Answer: ${answer}`);
-                }
-
-                if ((messageHistory.get(from)?.length || 0) > 10) messageHistory.get(from)?.shift();
-
-                // let reply = await LLM_MODEL.call(data.body);
-
-                // await messageObj.reply(reply);
             }
 
             return res.sendStatus(200);

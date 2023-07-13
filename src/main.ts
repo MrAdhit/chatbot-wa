@@ -11,17 +11,11 @@ export const LLM_MODEL = new OpenAI({ temperature: 0, verbose: true });
 const app = express();
 
 app.use((req, res, next) => {
-    console.log(req.url);
-
     next();
 });
 
 app.get("/", (req, res) => {
     return res.sendStatus(200);
-});
-
-app.get("/nodejs/token", (req, res) => {
-    return res.send("bro stfu");
 });
 
 app.all("/webhook", webhook);
